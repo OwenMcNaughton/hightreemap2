@@ -9,7 +9,8 @@ import App from './App';
 
 // Unload previous state from local storage if present, otherwise
 // a blank Flatris instance will be rendered
-const prevState = localStorage.getItem('highTreemapState');
+// const prevState = localStorage.getItem('highTreemapState');
+const prevState = undefined;
 const initialState = prevState ? { store: JSON.parse(prevState) } : undefined;
 
 const rootReducer = combineReducers({

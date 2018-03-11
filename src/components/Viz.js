@@ -26,8 +26,6 @@ class Viz extends React.Component {
     this.props.onWindowUpdate();
     window.addEventListener(
       'resize', this.props.onWindowUpdate);
-    window.addEventListener(
-      'resize', this.props.onUpdateStructure);
   }
 
   componentWillUnmount() {
@@ -38,9 +36,7 @@ class Viz extends React.Component {
   render() {
     return (
       <div>
-        <div style={style(this.props)} ref="vizdiv">
-
-        </div>
+        <div style={style(this.props)} ref="vizdiv"/>
         <div>
           <Options/>
         </div>
@@ -55,9 +51,7 @@ Viz.propTypes = {
   onUpdateStructure: PropTypes.func.isRequired,
 };
 
-Viz.defaultProps = {
-  hello: 'arse',
-};
+Viz.defaultProps = {};
 
 const mapStateToProps = ({ store }) => ({
   ...store,

@@ -3,14 +3,10 @@ import d3 from 'd3v3';
 class TreeMap {
   constructor(item_list, div, options) {
     this.opts = options;
-    this.opts.w = div.clientWidth - 3;
-    this.opts.h = div.clientHeight - 3;
     this.div = div;
-    this.item_list = TreeMap.filter_entities(
-      item_list,
-      this.opts.filter_selections,
-    );
+    this.item_list = item_list;
     this.tree_root = this.build_tree_from_flat_list();
+    this.focus_node = this.tree_root;
     this.initialize_d3_visualization(this.tree_root);
     this.accumulate(this.tree_root);
     this.calculate_layout(this.tree_root);
@@ -20,28 +16,36 @@ class TreeMap {
   static filter_entities(entities, filters) {
     let filtered_entities = entities;
     for (let [attribute_name, selections] of filters) {
-      filtered_entities = TreeMap.filter_by_attribute(
-        filtered_entities,
-        attribute_name,
-        selections,
-      );
+      if (selections.is_num) {
+        filtered_entities = TreeMap.filter_by_num(
+          filtered_entities,
+          attribute_name,
+          selections.slider_min,
+          selections.slider_max,
+        );
+      } else {
+        filtered_entities = TreeMap.filter_by_normal(
+          filtered_entities,
+          attribute_name,
+          selections.values,
+        );
+      }
     }
     return filtered_entities;
   }
 
-  static filter_by_attribute(entities, attribute, filter) {
+  static filter_by_normal(entities, attribute, filter) {
     if (filter.get('all')) {
       return entities;
     }
-    if (attribute === 'value') {
-      return entities.filter(function(s) {
-        const val = s.score || s.scores;
-        return (
-          (filter.get('defined') && val) || (filter.get('undefined') && !val)
-        );
-      });
-    }
     return entities.filter(s => !s[attribute] || filter.get(s[attribute]));
+  }
+
+  static filter_by_num(entities, attribute, min, max) {
+    return entities.filter(s => {
+      return s[attribute] === undefined ||
+        (s[attribute] >= min && s[attribute] <= max);
+    });
   }
 
   build_tree_from_flat_list() {
@@ -212,29 +216,16 @@ class TreeMap {
     this.update_display(tree_root, immediate_transition_path);
   }
 
-  static extract_nearest_score(candidate, time) {
-    if (candidate.scores) {
-      return candidate.scores.get(time);
-    } else if (candidate.score !== undefined) {
-      return candidate.score;
-    } else {
-      return undefined;
-    }
-  }
-
   find_aggregate_score(node) {
-    const candidates = this.gather_all_descendants(node).filter(candidate => {
-      return (
-        candidate &&
-        (candidate.score !== undefined || candidate.scores !== undefined)
-      );
+    const candidates = TreeMap.gather_all_descendants(node).filter(c => {
+      return c && c[this.opts.color_attr] !== undefined;
     });
     if (candidates.length === 1) {
-      return candidates[0].score;
+      return candidates[0][this.opts.color_attr];
     }
     const scores = candidates
       .map(candidate => {
-        return candidate.score;
+        return parseFloat(candidate[this.opts.color_attr]);
       })
       .sort((candidate_a_score, candidate_b_score) => {
         return (candidate_a_score || 0) - (candidate_b_score || 0);
@@ -259,7 +250,7 @@ class TreeMap {
     }
   }
 
-  gather_all_descendants(node) {
+  static gather_all_descendants(node) {
     function gather_all_descendants_intl(node, candidates) {
       if (node.entity) {
         candidates.push(node.entity);
@@ -278,10 +269,12 @@ class TreeMap {
   }
 
   initialize_tooltip(node) {
+    let a = this.opts.color_attr;
     let text = this.navbar_name(node);
-    text += node.score !== undefined ? '<br>Value: ' + (node.score || '') : '';
+    node[a] = this.find_aggregate_score(node);
+    text += node[a] !== undefined ? '<br>' + a + ': ' + (node[a] || '') : '';
     text += node._children
-      ? '<br>Contains ' + this.gather_all_descendants(node).length + ' entities'
+      ? '<br>Has ' + TreeMap.gather_all_descendants(node).length + ' entities'
       : '';
     this.tooltip = d3
       .select('body')
@@ -362,59 +355,76 @@ class TreeMap {
     }
   }
 
+  has_focused_parent(node, treemap) {
+    if (!treemap.focus_node) {
+      return true;
+    }
+    if (!node.parent) {
+      return false;
+    }
+    if (node.parent === treemap.focus_node) {
+      return true;
+    }
+    return treemap.has_focused_parent(node.parent, treemap);
+  }
+
   display_boxes(force_score_recalculation = false) {
     const treemap = this;
     // Append all the child rectangles.
-    this.focus_g
-      .selectAll('.child')
-      .data(function(node) {
-        const descendants = [];
-        treemap.fetch_descendants(
-          node,
-          descendants,
-          treemap.opts.render_depth - 1,
-        );
-        return descendants;
-      })
-      .enter()
-      .append('rect')
-      .attr('fill', function(node) {
-        node.score =
-          node.score === undefined || force_score_recalculation
-            ? treemap.find_aggregate_score(node)
-            : node.score;
-        node.color = treemap.opts.fill_color(node);
-        return node.color;
-      })
-      .attr('fill-opacity', '1.0')
-      .attr('stroke', this.opts.stroke_on ? '#999' : 'none')
-      .on('mouseover', function(d) {
-        d3.select(this).style('fill-opacity', '0.5');
-        d3.select('#tooltip').remove();
-        treemap.initialize_tooltip(d);
-      })
-      .on('mouseout', function(d) {
-        d3.select(this).style('fill-opacity', '1.0');
-        d3.select('#tooltip').remove();
-      })
-      .on('mousemove', function(d) {
-        treemap.tooltip
-          .style('top', d3.event.pageY - 10 + 'px')
-          .style('left', d3.event.pageX + 10 + 'px');
-      })
-      .on('click', node => {
-        if (node.entity) {
-          treemap.goto_divedash(node.entity);
-        }
-      })
-      .call(this.render_rect);
+    if (this.opts.render_depth != 0) {
+      this.focus_g
+        .selectAll('.child')
+        .data(function(node) {
+          const descendants = [];
+          if (treemap.has_focused_parent(node, treemap)) {
+            treemap.fetch_descendants(
+              node,
+              descendants,
+              treemap.opts.render_depth - 1,
+            );
+          }
+          return descendants;
+        })
+        .enter()
+        .append('rect')
+        .attr('fill', function(node) {
+          node.color = treemap.opts.fill_color(node, treemap.opts.color_attr);
+          return node.color;
+        })
+        .attr('fill-opacity', '1.0')
+        .attr('stroke', this.opts.stroke_on ? '#999' : 'none')
+        .on('mouseover', function(d) {
+          d3.select(this).style('fill-opacity', '0.5');
+          d3.select('#tooltip').remove();
+          treemap.initialize_tooltip(d);
+        })
+        .on('mouseout', function(d) {
+          d3.select(this).style('fill-opacity', '1.0');
+          d3.select('#tooltip').remove();
+        })
+        .on('mousemove', function(d) {
+          const right = d3.event.pageX > (treemap.opts.w - 100);
+          const bottom = d3.event.pageY > (treemap.opts.h - 100);
+          const w = treemap.tooltip[0][0].getBoundingClientRect().width;
+          const h = treemap.tooltip[0][0].getBoundingClientRect().height;
+          treemap.tooltip
+            .style('left', d3.event.pageX + (right ? -(10 + w) : 10) + 'px')
+            .style('top', d3.event.pageY - (bottom ? (h) : 10) + 'px');
+        })
+        .on('click', node => {
+          if (node.entity) {
+            treemap.goto_divedash(node.entity);
+          }
+        })
+        .call(this.render_rect);
+    }
     // Append the parent rectangles.
     this.focus_g
       .append('rect')
       .attr('fill', function(node) {
-        node.score = treemap.find_aggregate_score(node);
-        if (node.node_type === 'entity') {
-          return treemap.opts.fill_color(node);
+        node[treemap.opts.color_attr] = treemap.find_aggregate_score(node);
+        if (node.node_type === 'leaf' || treemap.opts.render_depth == 0) {
+          return treemap.opts.fill_color(node, treemap.opts.color_attr);
         } else {
           return 'none';
         }
@@ -435,10 +445,10 @@ class TreeMap {
       })
       .call(this.render_rect);
     // Append labels.
-    let x = this.focus_g
+    this.focus_g
       .append('text')
       .attr('dy', '.75em')
-      .attr('font-size', '200%')
+      .attr('font-size', '100%')
       .style('stroke', 'black')
       .style('stroke-width', '4px')
       .style('opacity', '0.8')
@@ -447,41 +457,32 @@ class TreeMap {
         node.label = this;
         return (
           node.name +
-          (node.score !== undefined
-            ? ': ' + TreeMap.short_number(node.score, 2)
+          (node[treemap.opts.color_attr] !== undefined
+            ? ': ' + TreeMap.short_number(node[treemap.opts.color_attr], 2)
             : '')
         );
       });
-    x.attr('font-size', function(d) {
-      let ratio = (d.dx / this.getComputedTextLength()) * 150;
-      ratio = Math.floor(ratio);
-      return Math.min(ratio, 150) + '%';
-    })
-    let y =this.focus_g
+    this.focus_g
       .append('text')
       .attr('dy', '.75em')
-      .attr('font-size', '200%')
+      .attr('font-size', '100%')
       .style('fill', 'white')
       .call(this.render_label)
       .text(function(node) {
         node.label = this;
         return (
           node.name +
-          (node.score !== undefined
-            ? ': ' + TreeMap.short_number(node.score, 2)
+          (node[treemap.opts.color_attr] !== undefined
+            ? ': ' + TreeMap.short_number(node[treemap.opts.color_attr], 2)
             : '')
         );
       });
-    y.attr('font-size', function(d) {
-      let ratio = (d.dx / this.getComputedTextLength()) * 150;
-      ratio = Math.floor(ratio);
-      return Math.min(ratio, 150) + '%';
-    })
   }
 
   transition(path, viz_g, duration) {
     d3.select('#tooltip').remove();
     const selected = path[0];
+    this.focus_node = selected;
     if (selected.entity) {
       this.goto_divedash(selected.entity);
       return;
@@ -580,11 +581,12 @@ class TreeMap {
   navbar_name(node) {
     return node.parent
       ? this.navbar_name(node.parent) + ' ==> ' + node.name
-      : node.name;
+      : '';
   }
 
-  update_colors(new_fill_color) {
+  update_colors(new_fill_color, color_attr) {
     this.opts.fill_color = new_fill_color;
+    this.opts.color_attr = color_attr;
     this.focus_g.selectAll('rect').remove();
     this.focus_g.selectAll('text').remove();
     this.display_boxes();
@@ -603,7 +605,7 @@ class TreeMap {
       'stroke',
       function(node) {
         if (this.opts.stroke_on) {
-          return node.node_type === 'entity' ? '#999' : '#333';
+          return node.node_type === 'leaf' ? '#999' : '#333';
         }
         return 'none';
       }.bind(this),
@@ -611,14 +613,14 @@ class TreeMap {
   }
 
   goto_divedash(entity) {
-    // const uri = DIVE_URI.replace('{}', entity.name);
-    // window.open(uri);
+    window.open(entity.uri);
   }
 
   static short_number(num, decimals) {
     if (num === null) {
       return '';
     }
+    num = parseFloat(num);
     const trillion_ceiling = 14;
     decimals = !decimals || decimals < 0 ? 0 : decimals;
     const power_parts = num.toPrecision(2).split('e');
